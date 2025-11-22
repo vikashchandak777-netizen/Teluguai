@@ -3,6 +3,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import requests
 
+# Read tokens securely from environment variables
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
@@ -25,11 +26,7 @@ def get_ai_response(message, user_id):
     try:
         add_message(user_id, "user", message)
         
-        system_instruction = """You are a compassionate Telugu-English speaking AI friend.
-Reply in the same language mix as the user.
-If user speaks Telugu, reply in Telugu.
-If user mixes Telugu and English, reply in the same mix.
-Be empathetic, kind, and friendly."""
+        system_instruction = "You are a compassionate Telugu-English speaking AI friend. Reply in the same language mix as the user. If user speaks Telugu, reply in Telugu. If user mixes Telugu and English, reply in the same mix. Be empathetic, kind, and friendly."
 
         history = get_history(user_id)
         
@@ -53,22 +50,16 @@ Be empathetic, kind, and friendly."""
         else:
             return "Sorry, something went wrong."
     except Exception:
-        return "I'm here to listen. Tell me more."
+        return "I am here to listen. Tell me more."
 
 async def start(update, context):
     user_name = update.effective_user.first_name
-    await update.message.reply_text(
-        f"Hi {user_name}! I am your Telugu AI friend. Talk to me in Telugu, English, or both!"
-    )
+    welcome_text = f"Hi {user_name}! I am your Telugu AI friend. Talk to me in Telugu, English, or both!"
+    await update.message.reply_text(welcome_text)
 
 async def help_cmd(update, context):
-    await update.message.reply_text(
-        "Chat freely with me in Telugu and English.
-Commands:
-/start
-/help
-/clear"
-    )
+    help_text = "Chat freely with me in Telugu and English. Commands: /start /help /clear"
+    await update.message.reply_text(help_text)
 
 async def clear_cmd(update, context):
     user_id = update.effective_user.id
