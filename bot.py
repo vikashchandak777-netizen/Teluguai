@@ -4,21 +4,25 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 import requests
 from threading import Thread
 from flask import Flask
+import logging
 
-# Flask app for health check
-app = Flask(__name__)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-@app.route('/')
+flask_app = Flask(__name__)
+
+@flask_app.route('/')
 def home():
-    return "Bot is running!"
+    return "Telegram Bot is running!", 200
 
-@app.route('/health')
+@flask_app.route('/health')
 def health():
     return "OK", 200
 
-# Telegram bot code
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+PORT = int(os.getenv('PORT', 10000))
+
 GEMINI_API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={GEMINI_API_KEY}"
 
 user_conversations = {}
@@ -37,48 +41,80 @@ def add_message(user_id, role, content):
 def get_ai_response(message, user_id):
     try:
         add_message(user_id, "user", message)
-        system_instruction = "You are a compassionate Telugu-English speaking AI friend. Reply in the same language mix as the user. Be empathetic and caring."
+        system_instruction = "You are a compassionate Telugu-English speaking AI friend. Reply in the same language as user. Be empathetic and caring."
         history = get_history(user_id)
+        
         payload = {
-            "contents": [{"role": "user", "parts": [{"text": system_instruction}]}, *history],
-            "generationConfig": {"temperature": 0.8, "maxOutputTokens": 200}
+            "contents": [
+                {"role": "user", "parts": [{"text": system_instruction}]},
+                *history
+            ],
+            "generationConfig": {
+                "temperature": 0.8,
+                "maxOutputTokens": 200
+            }
         }
-        response = requests.post(GEMINI_API_URL, json=payload)
+        
+        response = requests.post(GEMINI_API_URL, json=payload, timeout=10)
+        
         if response.status_code == 200:
             data = response.json()
             reply = data['candidates'][0]['content']['parts'][0]['text']
             add_message(user_id, "model", reply)
             return reply
-        return "Please try again."
-    except:
-        return "I am here to listen."
+        else:
+            return "Sorry, please try again in a moment."
+    except Exception as e:
+        logger.error(f"Error in AI response: {e}")
+        return "I am here to listen. Tell me more."
 
-async def start(update, context):
-    await update.message.reply_text("Hi! I am your Telugu AI friend!")
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_name = update.effective_user.first_name
+    await update.message.reply_text(
+        f"Hi {user_name}! I am your Telugu-English AI friend. Talk to me!"
+    )
 
-async def help_cmd(update, context):
-    await update.message.reply_text("Chat with me in Telugu or English!")
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Chat with me in Telugu, English, or mix both!"
+    )
 
-async def clear_cmd(update, context):
-    user_conversations[update.effective_user.id] = []
-    await update.message.reply_text("Chat cleared!")
+async def clear_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_conversations[user_id] = []
+    await update.message.reply_text("Chat history cleared!")
 
-async def handle_message(update, context):
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text
+    
     await update.message.chat.send_action("typing")
-    reply = get_ai_response(update.message.text, update.effective_user.id)
+    reply = get_ai_response(text, user_id)
     await update.message.reply_text(reply)
 
 def run_bot():
-    telegram_app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-    telegram_app.add_handler(CommandHandler("start", start))
-    telegram_app.add_handler(CommandHandler("help", help_cmd))
-    telegram_app.add_handler(CommandHandler("clear", clear_cmd))
-    telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("Telegram bot running...")
-    telegram_app.run_polling()
+    """Run the Telegram bot"""
+    try:
+        application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+        
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("help", help_cmd))
+        application.add_handler(CommandHandler("clear", clear_cmd))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        
+        logger.info("Starting Telegram bot...")
+        application.run_polling(drop_pending_updates=True)
+    except Exception as e:
+        logger.error(f"Error running bot: {e}")
+
+def run_flask():
+    """Run Flask web server for Render"""
+    flask_app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
 
 if __name__ == '__main__':
-    # Run Flask in a separate thread
-    Thread(target=lambda: app.run(host='0.0.0.0', port=int(os.getenv('PORT', 10000)))).start()
-    # Run Telegram bot
+    
+    flask_thread = Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    logger.info(f"Flask server started on port {PORT}")
+    
     run_bot()
