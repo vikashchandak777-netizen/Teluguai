@@ -4,14 +4,13 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 import requests
 from flask import Flask, request
 import logging
+import asyncio
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Flask app
 app = Flask(__name__)
 
-# Bot credentials
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 PORT = int(os.getenv('PORT', 10000))
@@ -80,16 +79,25 @@ def health():
     return "OK", 200
 
 @app.route(f'/{TELEGRAM_BOT_TOKEN}', methods=['POST'])
-async def webhook():
+def webhook():
     """Handle incoming updates from Telegram"""
     try:
         json_data = request.get_json()
         update = Update.de_json(json_data, telegram_app.bot)
-        await telegram_app.process_update(update)
+        # Process update asynchronously
+        asyncio.run(telegram_app.process_update(update))
         return "OK", 200
     except Exception as e:
         logger.error(f"Webhook error: {e}")
         return "Error", 500
+
+async def setup_webhook():
+    """Setup webhook asynchronously"""
+    if WEBHOOK_URL:
+        webhook_url = f"{WEBHOOK_URL}/{TELEGRAM_BOT_TOKEN}"
+        logger.info(f"Setting webhook to: {webhook_url}")
+        await telegram_app.bot.set_webhook(url=webhook_url)
+        logger.info("Webhook set successfully!")
 
 def setup_application():
     """Setup telegram application"""
@@ -102,11 +110,11 @@ def setup_application():
     telegram_app.add_handler(CommandHandler("clear", clear_cmd))
     telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    # Set webhook
-    if WEBHOOK_URL:
-        webhook_url = f"{WEBHOOK_URL}/{TELEGRAM_BOT_TOKEN}"
-        logger.info(f"Setting webhook to: {webhook_url}")
-        telegram_app.bot.set_webhook(url=webhook_url)
+    # Initialize the application
+    asyncio.run(telegram_app.initialize())
+    
+    # Setup webhook
+    asyncio.run(setup_webhook())
     
     return telegram_app
 
