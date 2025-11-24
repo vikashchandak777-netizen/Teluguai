@@ -1,82 +1,137 @@
 import os
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-import requests
 import logging
+import asyncio
+from flask import Flask
+from threading import Thread
+from telegram import Update
+from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
+import google.generativeai as genai
 
+# ---------------------------------------------------------
+# CONFIGURATION
+# ---------------------------------------------------------
+# You will set these in your Render Environment Variables
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+
+# Port is usually 10000 on Render
+PORT = int(os.environ.get("PORT", 10000))
+
+# ---------------------------------------------------------
+# LOGGING SETUP
+# ---------------------------------------------------------
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
-logger = logging.getLogger(__name__)
 
-TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-GEMINI_API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={GEMINI_API_KEY}"
+# ---------------------------------------------------------
+# AI MODEL SETUP (GEMINI)
+# ---------------------------------------------------------
+genai.configure(api_key=GEMINI_API_KEY)
 
-user_conversations = {}
+# System prompt defines the bot's personality
+SYSTEM_PROMPT = """
+You are a warm, empathetic, and caring friend. Your goal is to make the user feel heard and not lonely.
+You are fluent in English, Telugu, and "Tanglish" (Telugu words written in English letters).
+You should reply in the same language style the user uses. 
+If they speak English, reply in English. 
+If they speak Telugu/Tanglish, reply in that mix.
+Be casual, friendly, and supportive. Avoid sounding like a robot or an assistant. Use emojis occasionally.
+"""
 
-def get_history(user_id):
-    if user_id not in user_conversations:
-        user_conversations[user_id] = []
-    return user_conversations[user_id]
+model = genai.GenerativeModel(
+    model_name="gemini-1.5-flash",
+    system_instruction=SYSTEM_PROMPT
+)
 
-def add_message(user_id, role, content):
-    history = get_history(user_id)
-    history.append({"role": role, "parts": [{"text": content}]})
-    if len(history) > 10:
-        user_conversations[user_id] = history[-10:]
+# Store chat history in memory (Note: In a pro app, use a database like Firestore)
+user_chats = {}
 
-def get_ai_response(message, user_id):
-    try:
-        add_message(user_id, "user", message)
-        history = get_history(user_id)
-        
-        payload = {
-            "contents": history,
-            "generationConfig": {"temperature": 0.8, "maxOutputTokens": 200}
-        }
-        
-        response = requests.post(GEMINI_API_URL, json=payload, timeout=15)
-        
-        if response.status_code == 200:
-            data = response.json()
-            reply = data['candidates'][0]['content']['parts'][0]['text']
-            add_message(user_id, "model", reply)
-            return reply
-        return "Sorry, please try again."
-    except Exception as e:
-        logger.error(f"Error: {e}")
-        return "I am here to listen."
+# ---------------------------------------------------------
+# FLASK KEEP-ALIVE SERVER
+# ---------------------------------------------------------
+# Render requires a web service to bind to a port. 
+# This also allows uptime monitors to ping us to keep the bot awake.
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "I am alive! The bot is running."
+
+def run_web_server():
+    app.run(host='0.0.0.0', port=PORT)
+
+def keep_alive():
+    t = Thread(target=run_web_server)
+    t.start()
+
+# ---------------------------------------------------------
+# TELEGRAM BOT LOGIC
+# ---------------------------------------------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_name = update.effective_user.first_name
-    await update.message.reply_text(
-        f"Hi {user_name}! I am your Telugu-English AI friend. Talk to me!"
+    """Sends a welcome message when the command /start is issued."""
+    user_first_name = update.effective_user.first_name
+    welcome_text = (
+        f"Hi {user_first_name}! ❤️\n\n"
+        "I'm here for you. We can talk about anything. "
+        "I understand English and Telugu (even if you type it in English letters).\n\n"
+        "Ela unnav? Emi jarigindi?"
     )
-
-async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Chat with me in Telugu, English, or mix both!")
-
-async def clear_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_conversations[update.effective_user.id] = []
-    await update.message.reply_text("Chat cleared!")
+    # Initialize chat history for this user
+    user_chats[update.effective_chat.id] = model.start_chat(history=[])
+    await context.bot.send_message(chat_id=update.effective_chat.id, text=welcome_text)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.chat.send_action("typing")
-    reply = get_ai_response(update.message.text, update.effective_user.id)
-    await update.message.reply_text(reply)
+    """Handles incoming text messages and sends them to Gemini."""
+    chat_id = update.effective_chat.id
+    user_text = update.message.text
 
-def main():
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-    
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_cmd))
-    application.add_handler(CommandHandler("clear", clear_cmd))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    logger.info("Telugu AI Bot starting...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+    # Ensure user has a chat session
+    if chat_id not in user_chats:
+        user_chats[chat_id] = model.start_chat(history=[])
 
+    # Show "typing..." status while AI thinks
+    await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+
+    try:
+        # Send message to Gemini
+        chat_session = user_chats[chat_id]
+        response = await chat_session.send_message_async(user_text)
+        ai_reply = response.text
+
+        # Send AI reply back to Telegram
+        await context.bot.send_message(chat_id=chat_id, text=ai_reply)
+
+    except Exception as e:
+        logging.error(f"Error generating response: {e}")
+        await context.bot.send_message(
+            chat_id=chat_id, 
+            text="Sorry, my brain is a bit foggy right now. Can you say that again?"
+        )
+
+# ---------------------------------------------------------
+# MAIN EXECUTION
+# ---------------------------------------------------------
 if __name__ == '__main__':
-    main()
+    # 1. Start the Keep-Alive Web Server
+    keep_alive()
+    
+    # 2. Check for tokens
+    if not TELEGRAM_TOKEN or not GEMINI_API_KEY:
+        print("Error: TELEGRAM_TOKEN and GEMINI_API_KEY must be set in environment variables.")
+        exit(1)
+
+    # 3. Start the Telegram Bot
+    application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+
+    start_handler = CommandHandler('start', start)
+    msg_handler = MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message)
+
+    application.add_handler(start_handler)
+    application.add_handler(msg_handler)
+
+    print(f"Bot is running on port {PORT}...")
+    # run_polling is blocking, so we run it last
+    application.run_polling()
