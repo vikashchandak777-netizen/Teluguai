@@ -23,10 +23,15 @@ logging.basicConfig(
 )
 
 # ---------------------------------------------------------
-# AI MODEL SETUP (GEMINI)
+# AI MODEL SETUP (Universal Fix)
 # ---------------------------------------------------------
 genai.configure(api_key=GEMINI_API_KEY)
 
+# We use the older, more reliable "gemini-pro" model to avoid 404 errors.
+# We also do NOT pass system_instruction to the constructor to avoid compatibility issues.
+model = genai.GenerativeModel("gemini-pro")
+
+# We define the personality here, and we will "inject" it into the chat history manually.
 SYSTEM_PROMPT = """
 You are a warm, empathetic, and caring friend. Your goal is to make the user feel heard and not lonely.
 You are fluent in English, Telugu, and "Tanglish" (Telugu words written in English letters).
@@ -35,13 +40,6 @@ If they speak English, reply in English.
 If they speak Telugu/Tanglish, reply in that mix.
 Be casual, friendly, and supportive. Avoid sounding like a robot or an assistant. Use emojis occasionally.
 """
-
-# UPDATE: We are using "gemini-1.5-flash-latest" which is more stable than the short name.
-# If this still fails, you can try "gemini-pro"
-model = genai.GenerativeModel(
-    model_name="gemini-1.5-flash-latest",
-    system_instruction=SYSTEM_PROMPT
-)
 
 # Store chat history in memory
 user_chats = {}
@@ -67,24 +65,39 @@ def keep_alive():
 # ---------------------------------------------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Sends a welcome message when the command /start is issued."""
+    """Sends a welcome message and initializes the chat with the persona."""
     user_first_name = update.effective_user.first_name
+    chat_id = update.effective_chat.id
+    
     welcome_text = (
         f"Hi {user_first_name}! ❤️\n\n"
         "I'm here for you. We can talk about anything. "
         "I understand English and Telugu (even if you type it in English letters).\n\n"
         "Ela unnav? Emi jarigindi?"
     )
-    user_chats[update.effective_chat.id] = model.start_chat(history=[])
-    await context.bot.send_message(chat_id=update.effective_chat.id, text=welcome_text)
+
+    # MAGIC FIX: We inject the personality into the history manually.
+    # This works on ALL model versions, even if they don't support system_instructions.
+    initial_history = [
+        {"role": "user", "parts": [SYSTEM_PROMPT]},
+        {"role": "model", "parts": ["Understood. I will be your empathetic companion."]}
+    ]
+    
+    user_chats[chat_id] = model.start_chat(history=initial_history)
+    await context.bot.send_message(chat_id=chat_id, text=welcome_text)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles incoming text messages and sends them to Gemini."""
+    """Handles incoming text messages."""
     chat_id = update.effective_chat.id
     user_text = update.message.text
 
+    # If chat session doesn't exist, create it with the persona injection
     if chat_id not in user_chats:
-        user_chats[chat_id] = model.start_chat(history=[])
+        initial_history = [
+            {"role": "user", "parts": [SYSTEM_PROMPT]},
+            {"role": "model", "parts": ["Understood. I will be your empathetic companion."]}
+        ]
+        user_chats[chat_id] = model.start_chat(history=initial_history)
 
     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
 
@@ -95,12 +108,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=chat_id, text=ai_reply)
 
     except Exception as e:
-        # If the specific model fails, we log it and try to tell the user
-        logging.error(f"Error generating response: {e}")
-        # Fallback message
+        logging.error(f"Error: {e}")
+        # If even gemini-pro fails, it usually means the API Key is invalid.
         await context.bot.send_message(
             chat_id=chat_id, 
-            text="Sorry, I'm having a little trouble thinking right now. Can you try saying that again?"
+            text="I'm having trouble connecting to my brain. Please check the API Key."
         )
 
 # ---------------------------------------------------------
