@@ -26,11 +26,11 @@ logging.basicConfig(
 # ---------------------------------------------------------
 genai.configure(api_key=GEMINI_API_KEY)
 
-# We are using "gemini-2.5-flash" because it was GREEN in your scanner list.
+# We stick with the model that we proved works:
 model = genai.GenerativeModel("gemini-2.5-flash")
 
 # ---------------------------------------------------------
-# FLASK KEEP-ALIVE SERVER
+# FLASK KEEP-ALIVE SERVER (For 24/7 Uptime)
 # ---------------------------------------------------------
 app = Flask(__name__)
 
@@ -46,7 +46,7 @@ def keep_alive():
     t.start()
 
 # ---------------------------------------------------------
-# BOT PERSONALITY & LOGIC
+# BOT PERSONALITY
 # ---------------------------------------------------------
 SYSTEM_PROMPT = """
 You are a warm, empathetic, and caring friend. Your goal is to make the user feel heard and not lonely.
@@ -96,7 +96,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=chat_id, text=response.text)
 
     except Exception as e:
-        # Graceful error handling
+        # Graceful error handling - doesn't crash the bot
         logging.error(f"AI Error: {e}")
         await context.bot.send_message(
             chat_id=chat_id, 
@@ -121,8 +121,6 @@ if __name__ == '__main__':
 
     application.add_handler(CommandHandler('start', start))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-    
-    # This fixes the "No error handlers registered" warning
     application.add_error_handler(error_handler)
 
     print(f"Bot is running on port {PORT}...")
